@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document Viewer</title>
     
-    <!-- Engines -->
+    <!-- PDF.js Engine Links -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- Supabase Integration Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
-    <!-- 1. Load your credentials configuration layout map securely first -->
+    <!-- Load your credentials securely from config.js first -->
     <script src="config.js"></script>
 
     <style>
@@ -21,6 +22,7 @@
             flex-direction: column;
             height: 100vh;
         }
+        /* Top Navigation Bar */
         .toolbar {
             background-color: #323639;
             color: white;
@@ -47,6 +49,8 @@
             transition: background 0.2s;
         }
         .download-btn:hover { background-color: #0369a1; }
+        
+        /* PDF Scrolling Container */
         .pdf-container {
             flex: 1;
             overflow-y: auto;
@@ -61,29 +65,44 @@
             background-color: white;
             max-width: 100%;
         }
-        .loading { color: white; font-size: 18px; margin-top: 50px; }
+        .loading {
+            color: white;
+            font-size: 18px;
+            margin-top: 50px;
+        }
     </style>
 </head>
 <body>
 
+    <!-- Top Action Bar -->
     <div class="toolbar">
         <div class="title" id="pdf-title">Loading Document...</div>
-        <a href="" id="download-link" class="download-btn" download>Download PDF</a>
+        <a href="#" id="download-link" class="download-btn" download>Download PDF</a>
     </div>
 
+    <!-- Scrollable Document View Space -->
     <div class="pdf-container" id="pdf-viewer">
         <div class="loading" id="loading-text">Rendering your document layout...</div>
     </div>
 
     <script>
-        const PDF_URL = 'AL-Current-Affiars_2026.pdf'; // Path to your target PDF asset
+        // --- CONFIGURATION ---
+        // This targets your raw binary PDF file sitting in your Netlify root folder
+        const PDF_FILENAME = 'al-current-affairs_2026.pdf'; 
 
-        document.getElementById('download-link').href = PDF_URL;
-        document.getElementById('pdf-title').textContent = PDF_URL.split('/').pop();
+        // Generate the absolute paths dynamically to prevent Netlify routing confusion
+        const ABSOLUTE_PDF_URL = window.location.origin + '/' + PDF_FILENAME;
 
-        // 2. Safely initialize using values parsed from config.js
+        // Configure layout download tags instantly
+        const downloadButton = document.getElementById('download-link');
+        downloadButton.href = ABSOLUTE_PDF_URL;
+        downloadButton.setAttribute('download', PDF_FILENAME);
+        document.getElementById('pdf-title').textContent = PDF_FILENAME;
+
+        // 1. Initialize Supabase Client dynamically using parameters from config.js
         const supabase = Supabase.createClient(SUPABASE_CONFIG.URL, SUPABASE_CONFIG.ANON_KEY);
 
+        // 2. Generate Client-Side Unique Browser Fingerprint
         function generateFingerprint() {
             const data = [
                 navigator.userAgent,
@@ -103,6 +122,7 @@
             return 'fp_' + Math.abs(hash);
         }
 
+        // 3. Fire the secure logging entry to Supabase
         async function trackView() {
             let ipAddress = 'Unknown';
             const fingerprint = generateFingerprint();
@@ -113,27 +133,30 @@
                 const ipData = await response.json();
                 ipAddress = ipData.ip;
             } catch (err) {
-                console.error("IP fallback initialized.", err);
+                console.error("IP check skipped; tracking via layout signatures.", err);
             }
 
-            // This action succeeds perfectly because of our RLS open insert rule
+            // Calls your database. RLS rules protect other rows.
             const { error } = await supabase
                 .from('pdf_views')
                 .insert([{ viewer_ip: ipAddress, fingerprint: fingerprint, user_agent: userAgent }]);
 
-            if (error) console.error('Supabase write validation failure:', error.message);
+            if (error) console.error('Metrics sync alert:', error.message);
         }
 
+        // 4. Render PDF Document onto HTML5 Canvases
         async function renderPDF() {
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
             try {
-                const loadingTask = pdfjsLib.getDocument(PDF_URL);
+                // Pass the clean absolute URL down to the engine loader
+                const loadingTask = pdfjsLib.getDocument(ABSOLUTE_PDF_URL);
                 const pdf = await loadingTask.promise;
                 
                 const viewerContainer = document.getElementById('pdf-viewer');
-                document.getElementById('loading-text').remove();
+                document.getElementById('loading-text').remove(); // Clear loading indicator
 
+                // Render all pages vertically sequentially
                 for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                     const page = await pdf.getPage(pageNum);
                     const viewport = page.getViewport({ scale: 1.5 });
@@ -149,14 +172,16 @@
                     await page.render(renderContext).promise;
                 }
 
+                // Log metric to database ONLY after pages successfully load onto screen
                 trackView();
 
             } catch (error) {
-                console.error('Visual rendering exception:', error);
-                document.getElementById('loading-text').textContent = "Failed to open document structure.";
+                console.error('PDF.js execution context error:', error);
+                document.getElementById('loading-text').textContent = "Failed to load or parse the PDF document asset properly.";
             }
         }
 
+        // Trigger loop on page startup
         window.addEventListener('load', renderPDF);
     </script>
 </body>
