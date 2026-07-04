@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Viewer</title>
+    
+    <!-- Engines -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <!-- 1. Load your credentials configuration layout map securely first -->
+    <script src="config.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #525659;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .toolbar {
+            background-color: #323639;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .title { font-size: 14px; font-weight: 500; }
+        .download-btn {
+            background-color: #0284c7;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .download-btn:hover { background-color: #0369a1; }
+        .pdf-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+        canvas {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            background-color: white;
+            max-width: 100%;
+        }
+        .loading { color: white; font-size: 18px; margin-top: 50px; }
+    </style>
+</head>
+<body>
+
+    <div class="toolbar">
+        <div class="title" id="pdf-title">Loading Document...</div>
+        <a href="" id="download-link" class="download-btn" download>Download PDF</a>
+    </div>
+
+    <div class="pdf-container" id="pdf-viewer">
+        <div class="loading" id="loading-text">Rendering your document layout...</div>
+    </div>
+
+    <script>
+        const PDF_URL = 'report.pdf'; // Path to your target PDF asset
+
+        document.getElementById('download-link').href = PDF_URL;
+        document.getElementById('pdf-title').textContent = PDF_URL.split('/').pop();
+
+        // 2. Safely initialize using values parsed from config.js
+        const supabase = Supabase.createClient(SUPABASE_CONFIG.URL, SUPABASE_CONFIG.ANON_KEY);
+
+        function generateFingerprint() {
+            const data = [
+                navigator.userAgent,
+                navigator.language,
+                screen.colorDepth,
+                screen.width + 'x' + screen.height,
+                new Date().getTimezoneOffset(),
+                navigator.hardwareConcurrency
+            ].join('||');
+            
+            let hash = 0;
+            for (let i = 0; i < data.length; i++) {
+                let char = data.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash |= 0;
+            }
+            return 'fp_' + Math.abs(hash);
+        }
+
+        async function trackView() {
+            let ipAddress = 'Unknown';
+            const fingerprint = generateFingerprint();
+            const userAgent = navigator.userAgent;
+
+            try {
+                const response = await fetch('https://api.ipify.org?format=json');
+                const ipData = await response.json();
+                ipAddress = ipData.ip;
+            } catch (err) {
+                console.error("IP fallback initialized.", err);
+            }
+
+            // This action succeeds perfectly because of our RLS open insert rule
+            const { error } = await supabase
+                .from('pdf_views')
+                .insert([{ viewer_ip: ipAddress, fingerprint: fingerprint, user_agent: userAgent }]);
+
+            if (error) console.error('Supabase write validation failure:', error.message);
+        }
+
+        async function renderPDF() {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+            try {
+                const loadingTask = pdfjsLib.getDocument(PDF_URL);
+                const pdf = await loadingTask.promise;
+                
+                const viewerContainer = document.getElementById('pdf-viewer');
+                document.getElementById('loading-text').remove();
+
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    
+                    viewerContainer.appendChild(canvas);
+
+                    const renderContext = { canvasContext: context, viewport: viewport };
+                    await page.render(renderContext).promise;
+                }
+
+                trackView();
+
+            } catch (error) {
+                console.error('Visual rendering exception:', error);
+                document.getElementById('loading-text').textContent = "Failed to open document structure.";
+            }
+        }
+
+        window.addEventListener('load', renderPDF);
+    </script>
+</body>
+</html>
